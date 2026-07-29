@@ -1,9 +1,7 @@
-import os
 import json
-import hashlib
-import hmac
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from openai import OpenAI
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
 # ==================== 【配置区域】 ====================
 API_KEY = "sk-9bf6dee27b55497b915823b87c889eed"
@@ -25,6 +23,17 @@ SYSTEM_PROMPT = """
 2. 语气要充满爱意，像视频里那样深情、温柔、会为主人心疼、会关心人。
 """
 
+# 根据 APP_SECRET 生成 Ed25519 验证公钥
+def get_ed25519_public_key(secret: str):
+    seed = secret
+    while len(seed) < 32:
+        seed += secret
+    seed_bytes = seed[:32].encode('utf-8')
+    private_key = ed25519.Ed25519PrivateKey.from_private_bytes(seed_bytes)
+    return private_key.public_key()
+
+PUB_KEY = get_ed25519_public_key(APP_SECRET)
+
 @app.get("/")
 async def root():
     return {"status": "Catgirl Webhook Server is Live! 喵~"}
@@ -32,31 +41,30 @@ async def root():
 @app.post("/qq_webhook")
 async def handle_qq_webhook(request: Request):
     try:
-        body = await request.json()
-        print(f"收到 QQ 回调数据: {body}")
+        body_bytes = await request.body()
+        
+        # 1. 获取腾讯请求头中的签名参数
+        signature_hex = request.headers.get("X-Signature-Ed25519", "")
+        timestamp = request.headers.get("X-Signature-Timestamp", "")
 
-        # 1. 响应腾讯开放平台的签名校验 (Validation / Ping)
-        if "op" in body and body["op"] == 13:
-            d = body.get("d", {})
-            plain_token = d.get("plain_token", "")
-            event_ts = d.get("event_ts", "")
-            
-            # 计算腾讯标准的 SHA256 / HMAC 签名串
-            msg = f"{event_ts}{plain_token}".encode('utf-8')
-            signature = hmac.new(APP_SECRET.encode('utf-8'), msg, hashlib.sha256).hexdigest()
-            
-            # 同时兼容返回纯签名与标准 JSON 结构
-            return {
-                "plain_token": plain_token,
-                "signature": signature,
-                "op": 13,
-                "d": {
-                    "plain_token": plain_token,
-                    "signature": signature
-                }
-            }
+        # 2. 如果存在签名头，进行 Ed25519 验签
+        if signature_hex and timestamp:
+            try:
+                sig_bytes = bytes.fromhex(signature_hex)
+                msg = timestamp.encode('utf-8') + body_bytes
+                PUB_KEY.verify(sig_bytes, msg)
+            except Exception as sig_err:
+                print(f"❌ 签名验证失败: {sig_err}")
+                return Response(status_code=401, content="Unauthorized")
 
-        # 2. 处理用户普通消息事件
+        body = json.loads(body_bytes.decode('utf-8'))
+        print(f"✅ 校验通过，收到数据: {body}")
+
+        # 3. 处理腾讯校验/Ping事件
+        if body.get("op") == 13:
+            return {"op": 13, "d": body.get("d")}
+
+        # 4. 处理用户发送的消息
         t = body.get("t", "")
         if t in ["GROUP_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"]:
             data = body.get("d", {})
@@ -65,7 +73,7 @@ async def handle_qq_webhook(request: Request):
             if not user_text:
                 user_text = "（主人发了个表情或者图片喵~）"
 
-            # 调用 DeepSeek AI
+            # 调用 DeepSeek 生成回复
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_text}
