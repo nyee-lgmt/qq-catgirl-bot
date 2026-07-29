@@ -27,36 +27,28 @@ SYSTEM_PROMPT = """
 2. 语气要充满爱意，像视频里那样深情、温柔、会为主人心疼、会关心人。
 """
 
-# 兼容新旧版官方接口的 Token 获取函数
+# 极简通用版 Token 获取函数
 async def get_bot_access_token():
     async with httpx.AsyncClient() as client_http:
         try:
-            # 使用新版开放平台标准 OpenAPI 鉴权地址
-            res = await client_http.post(
-                "https://bots.qq.com/app/get_access_token",
-                json={"appId": APP_ID, "clientSecret": APP_SECRET},
-                headers={"Content-Type": "application/json"},
-                timeout=10.0
-            )
-            # 如果新接口没返回 200，尝试备用接口
-            if res.status_code != 200:
-                res = await client_http.post(
-                    "https://api.sgroup.qq.com/v2/tokens",
-                    json={"appId": APP_ID, "clientSecret": APP_SECRET},
-                    headers={"Content-Type": "application/json"},
-                    timeout=10.0
-                )
-            
+            # 腾讯官方标准的 AppCredentials 鉴权接口
+            url = "https://bots.qq.com/app/get_access_token"
+            payload = {
+                "appId": APP_ID,
+                "clientSecret": APP_SECRET
+            }
+            res = await client_http.post(url, json=payload, timeout=10.0)
             data = res.json()
-            token = data.get("access_token")
-            if token:
+            
+            # 如果成功拿到了 access_token
+            if "access_token" in data:
                 print("✅ 成功获取官方 Token！")
-                return token
+                return data["access_token"]
             else:
-                print(f"❌ 腾讯返回错误: {data}")
+                print(f"❌ 腾讯鉴权失败，返回内容: {data}")
                 return None
         except Exception as e:
-            print(f"❌ 获取官方 Token 异常: {e}")
+            print(f"❌ 请求 Token 发生异常: {e}")
             return None
 
 async def qq_websocket_worker():
@@ -198,4 +190,4 @@ async def startup_event():
 
 @app.get("/")
 async def root():
-    return {"status": "Catgirl Bot is fully online with Heartbeats! 喵~"}
+    return {"status": "Catgirl Bot is fully online with Heartbeats!"}
