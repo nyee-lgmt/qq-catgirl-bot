@@ -11,8 +11,8 @@ API_KEY = "sk-9bf6dee27b55497b915823b87c889eed"
 BASE_URL = "https://api.deepseek.com"
 MODEL_NAME = "deepseek-chat"
 
-APP_ID = "1905312699"
-APP_SECRET = "3468BEINSyels08HQalw8KXkyCRgwDUm"
+APP_ID = "1905312839"
+APP_SECRET = "EPN9h2DAuQimbIl0"
 # ======================================================
 
 app = FastAPI()
