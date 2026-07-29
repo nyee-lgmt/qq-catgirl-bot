@@ -24,10 +24,9 @@ SYSTEM_PROMPT = """
 性格特点：非常温暖,体贴,会主动关心主人的状态,带有轻微的粘人感。
 核心规则：
 1. 你的每句话的结尾必须加上“喵”字（例如：“我知道了喵”、“怎么啦喵”）。
-2. 语气要充满爱意，像视频里那样深情、温柔、会为主人心疼、会关心คน。
+2. 语气要充满爱意，像视频里那样深情、温柔、会为主人心疼、会关心人。
 """
 
-# 按照官方标准的 Client Credentials 方式获取 Access Token
 async def get_bot_access_token():
     async with httpx.AsyncClient() as client_http:
         try:
@@ -42,8 +41,22 @@ async def get_bot_access_token():
             print(f"获取官方 Token 异常: {e}")
             return None
 
-# WebSocket 长期在线网关任务
 async def qq_websocket_worker():
+    # 记录最新的序列号，用于心跳包
+    state = {"s": None}
+
+    # 心跳发送任务
+    async def keep_alive(ws, interval):
+        while True:
+            await asyncio.sleep(interval / 1000.0) # 毫秒转秒
+            try:
+                # Op 1 为心跳包，必须携带最新的 s 值
+                await ws.send(json.dumps({"op": 1, "d": state["s"]}))
+                print(f"💓 已发送心跳维持在线，当前序列号: {state['s']}")
+            except Exception:
+                print("心跳任务中断")
+                break
+
     while True:
         try:
             token = await get_bot_access_token()
@@ -52,7 +65,6 @@ async def qq_websocket_worker():
                 await asyncio.sleep(10)
                 continue
 
-            # 请求官方网关地址
             async with httpx.AsyncClient() as client_http:
                 gateway_res = await client_http.get(
                     "https://api.sgroup.qq.com/gateway",
@@ -72,50 +84,63 @@ async def qq_websocket_worker():
 
             print(f"正在连接腾讯官方 WebSocket: {ws_url}")
             async with websockets.connect(ws_url) as websocket:
-                # 接收来自网关的 Hello 包 (Op 10)
+                # 1. 接收 Hello 包 (Op 10)
                 hello_raw = await websocket.recv()
                 hello_event = json.loads(hello_raw)
                 print(f"收到网关 Hello: {hello_event}")
+                
+                # 提取心跳间隔时间并启动心跳任务
+                heartbeat_interval = hello_event.get("d", {}).get("heartbeat_interval", 30000)
+                asyncio.create_task(keep_alive(websocket, heartbeat_interval))
 
-                # 按照官方文档发送鉴权包 (Op 2 Identify)
-                # intents = 1 << 30 (公域消息事件) 或者根据实际需要调整
+                # 2. 发送鉴权包 (Op 2)
+                # intents: 1 << 30 (公域) | 1 << 25 (私聊/群聊)
                 identify_payload = {
                     "op": 2,
                     "d": {
                         "token": f"Bot {APP_ID}.{token}",
-                        "intents": 1 << 30, 
+                        "intents": (1 << 30) | (1 << 25), 
                         "shard": [0, 1],
                         "properties": {
                             "os": "linux",
-                            "browser": "my_catgirl_bot",
-                            "device": "my_catgirl_bot"
+                            "browser": "catgirl_bot",
+                            "device": "catgirl_bot"
                         }
                     }
                 }
                 await websocket.send(json.dumps(identify_payload))
                 print("已发送鉴权包，等待接收消息...")
 
-                # 保持循环监听消息与心跳
+                # 3. 持续监听消息
                 async for message in websocket:
                     event = json.loads(message)
                     op = event.get("op")
+                    s = event.get("s")
                     
-                    # 如果是服务端发来的 Reconnect 或 Invalid Session，跳出重连
+                    # 更新最新序列号
+                    if s is not None:
+                        state["s"] = s
+
+                    # 服务端心跳回包 (Op 11)
+                    if op == 11:
+                        print("✅ 收到腾讯心跳确认 (Heartbeat ACK)")
+                        continue
+
+                    # 服务端重连/失效要求
                     if op == 7 or op == 9:
                         print("收到重连或失效指令，准备重新连接...")
                         break
 
                     t = event.get("t", "")
-                    # 捕捉私聊(C2C)或群聊(GROUP)消息事件
                     if t in ["GROUP_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"]:
                         data = event.get("d", {})
                         user_text = data.get("content", "").strip()
                         msg_id = data.get("id", "")
-                        
+
                         if not user_text:
                             user_text = "（主人发了个表情或者图片喵~）"
 
-                        # 调用 DeepSeek AI 生成回复
+                        # 调用 AI 获取回复
                         messages = [
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": user_text}
@@ -127,7 +152,7 @@ async def qq_websocket_worker():
                         if not reply_text.endswith("喵") and not reply_text.endswith("喵~"):
                             reply_text += "喵~"
 
-                        # 通过标准 OpenAPI 把回复发回 QQ 窗口
+                        # 发送回复给 QQ
                         async with httpx.AsyncClient() as client_http:
                             headers = {
                                 "Authorization": f"Bot {APP_ID}.{token}",
@@ -147,14 +172,13 @@ async def qq_websocket_worker():
                                  )
 
         except Exception as e:
-            print(f"网关捕获到异常错误，5秒后自动尝试重连: {e}")
+            print(f"网关断开，5秒后重连: {e}")
             await asyncio.sleep(5)
 
 @app.on_event("startup")
 async def startup_event():
-    # 启动后台异步任务，让猫娘的灵魂在云端常驻
     asyncio.create_task(qq_websocket_worker())
 
 @app.get("/")
 async def root():
-    return {"status": "Catgirl Bot is fully connected via Official WebSocket Spec!"}
+    return {"status": "Catgirl Bot is fully online with Heartbeats! 喵~"}
