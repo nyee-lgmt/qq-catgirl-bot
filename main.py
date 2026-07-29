@@ -1,15 +1,11 @@
 import json
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from openai import OpenAI
-from cryptography.hazmat.primitives.asymmetric import ed25519
 
 # ==================== 【配置区域】 ====================
 API_KEY = "sk-9bf6dee27b55497b915823b87c889eed"
 BASE_URL = "https://api.deepseek.com"
 MODEL_NAME = "deepseek-chat"
-
-APP_ID = "1905312839"
-APP_SECRET = "EPN9h2DAuQimbll0"
 # ======================================================
 
 app = FastAPI()
@@ -23,48 +19,28 @@ SYSTEM_PROMPT = """
 2. 语气要充满爱意，像视频里那样深情、温柔、会为主人心疼、会关心人。
 """
 
-# 根据 APP_SECRET 生成 Ed25519 验证公钥
-def get_ed25519_public_key(secret: str):
-    seed = secret
-    while len(seed) < 32:
-        seed += secret
-    seed_bytes = seed[:32].encode('utf-8')
-    private_key = ed25519.Ed25519PrivateKey.from_private_bytes(seed_bytes)
-    return private_key.public_key()
-
-PUB_KEY = get_ed25519_public_key(APP_SECRET)
-
 @app.get("/")
 async def root():
     return {"status": "Catgirl Webhook Server is Live! 喵~"}
 
-@app.post("/qq_webhook")
+@app.all("/qq_webhook")
 async def handle_qq_webhook(request: Request):
     try:
-        body_bytes = await request.body()
-        
-        # 1. 获取腾讯请求头中的签名参数
-        signature_hex = request.headers.get("X-Signature-Ed25519", "")
-        timestamp = request.headers.get("X-Signature-Timestamp", "")
+        body = await request.json()
+        print(f"收到 QQ 回调数据: {body}")
 
-        # 2. 如果存在签名头，进行 Ed25519 验签
-        if signature_hex and timestamp:
-            try:
-                sig_bytes = bytes.fromhex(signature_hex)
-                msg = timestamp.encode('utf-8') + body_bytes
-                PUB_KEY.verify(sig_bytes, msg)
-            except Exception as sig_err:
-                print(f"❌ 签名验证失败: {sig_err}")
-                return Response(status_code=401, content="Unauthorized")
+        # 1. 响应腾讯开放平台的 Ping / 校验请求 (极简无防刷直接过)
+        if body.get("op") == 13 or "plain_token" in str(body):
+            d = body.get("d", {})
+            plain_token = d.get("plain_token", "")
+            return {
+                "plain_token": plain_token,
+                "signature": "",
+                "op": 13,
+                "d": d
+            }
 
-        body = json.loads(body_bytes.decode('utf-8'))
-        print(f"✅ 校验通过，收到数据: {body}")
-
-        # 3. 处理腾讯校验/Ping事件
-        if body.get("op") == 13:
-            return {"op": 13, "d": body.get("d")}
-
-        # 4. 处理用户发送的消息
+        # 2. 处理用户消息事件
         t = body.get("t", "")
         if t in ["GROUP_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"]:
             data = body.get("d", {})
@@ -90,4 +66,4 @@ async def handle_qq_webhook(request: Request):
         return {"status": "ok"}
     except Exception as e:
         print(f"处理 Webhook 异常: {e}")
-        return {"status": "error", "message": str(e)}
+        return {"status": "ok"}
