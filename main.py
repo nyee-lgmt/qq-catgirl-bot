@@ -1,6 +1,7 @@
 import os
 import json
-import httpx
+import hashlib
+import hmac
 from fastapi import FastAPI, Request
 from openai import OpenAI
 
@@ -31,14 +32,26 @@ async def root():
 @app.post("/qq_webhook")
 async def handle_qq_webhook(request: Request):
     try:
-        body = await request.json()
+        body_bytes = await request.body()
+        body = json.loads(body_bytes.decode('utf-8'))
         print(f"收到 QQ 回调数据: {body}")
 
-        # 1. 处理腾讯开放平台校验请求 (Validation / Ping)
+        # 1. 响应腾讯开放平台的签名校验 (Validation / Ping)
         if "op" in body and body["op"] == 13:
-            return {"op": 13, "d": body.get("d")}
+            d = body.get("d", {})
+            plain_token = d.get("plain_token", "")
+            event_ts = d.get("event_ts", "")
+            
+            # 使用 APP_SECRET 签名加密校验
+            msg = f"{event_ts}{plain_token}".encode('utf-8')
+            signature = hmac.new(APP_SECRET.encode('utf-8'), msg, hashlib.sha256).hexdigest()
+            
+            return {
+                "plain_token": plain_token,
+                "signature": signature
+            }
 
-        # 2. 处理用户消息事件
+        # 2. 处理用户普通消息事件
         t = body.get("t", "")
         if t in ["GROUP_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"]:
             data = body.get("d", {})
@@ -47,7 +60,7 @@ async def handle_qq_webhook(request: Request):
             if not user_text:
                 user_text = "（主人发了个表情或者图片喵~）"
 
-            # 调用 DeepSeek 生成回复
+            # 调用 DeepSeek AI
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_text}
@@ -59,12 +72,9 @@ async def handle_qq_webhook(request: Request):
             if not reply_text.endswith("喵") and not reply_text.endswith("喵~"):
                 reply_text += "喵~"
 
-            # 直接在 HTTP 响应中将结果返还给 QQ
-            return {
-                "content": reply_text
-            }
+            return {"content": reply_text}
 
         return {"status": "ok"}
     except Exception as e:
-        print(f"处理 Webhook 发生错误: {e}")
+        print(f"处理 Webhook 异常: {e}")
         return {"status": "error", "message": str(e)}
