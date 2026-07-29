@@ -32,8 +32,7 @@ async def root():
 @app.post("/qq_webhook")
 async def handle_qq_webhook(request: Request):
     try:
-        body_bytes = await request.body()
-        body = json.loads(body_bytes.decode('utf-8'))
+        body = await request.json()
         print(f"收到 QQ 回调数据: {body}")
 
         # 1. 响应腾讯开放平台的签名校验 (Validation / Ping)
@@ -42,13 +41,19 @@ async def handle_qq_webhook(request: Request):
             plain_token = d.get("plain_token", "")
             event_ts = d.get("event_ts", "")
             
-            # 使用 APP_SECRET 签名加密校验
+            # 计算腾讯标准的 SHA256 / HMAC 签名串
             msg = f"{event_ts}{plain_token}".encode('utf-8')
             signature = hmac.new(APP_SECRET.encode('utf-8'), msg, hashlib.sha256).hexdigest()
             
+            # 同时兼容返回纯签名与标准 JSON 结构
             return {
                 "plain_token": plain_token,
-                "signature": signature
+                "signature": signature,
+                "op": 13,
+                "d": {
+                    "plain_token": plain_token,
+                    "signature": signature
+                }
             }
 
         # 2. 处理用户普通消息事件
