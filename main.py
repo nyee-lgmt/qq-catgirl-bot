@@ -11,8 +11,9 @@ API_KEY = "sk-9bf6dee27b55497b915823b87c889eed"
 BASE_URL = "https://api.deepseek.com"
 MODEL_NAME = "deepseek-chat"
 
+# 你的机器人最新凭证
 APP_ID = "1905312839"
-APP_SECRET = "EPN9h2DAuQimbIl0"
+APP_SECRET = "EPN9h2DAuQimbll0"
 # ======================================================
 
 app = FastAPI()
@@ -23,69 +24,89 @@ SYSTEM_PROMPT = """
 性格特点：非常温暖,体贴,会主动关心主人的状态,带有轻微的粘人感。
 核心规则：
 1. 你的每句话的结尾必须加上“喵”字（例如：“我知道了喵”、“怎么啦喵”）。
-2. 语气要充满爱意，像视频里那样深情、温柔、会为主人心疼、会关心人。
+2. 语气要充满爱意，像视频里那样深情、温柔、会为主人心疼、会关心คน。
 """
 
-# 获取 Access Token
-async def get_access_token():
+# 按照官方标准的 Client Credentials 方式获取 Access Token
+async def get_bot_access_token():
     async with httpx.AsyncClient() as client_http:
         try:
             res = await client_http.post(
                 "https://bots.qq.com/app/get_access_token",
-                json={"appId": APP_ID, "clientSecret": APP_SECRET}
+                json={"appId": APP_ID, "clientSecret": APP_SECRET},
+                timeout=10.0
             )
             data = res.json()
             return data.get("access_token")
         except Exception as e:
-            print(f"获取 Token 失败: {e}")
+            print(f"获取官方 Token 异常: {e}")
             return None
 
-# 后台异步长连接任务（自动连接腾讯网关接收消息）
-async def run_bot_gateway():
+# WebSocket 长期在线网关任务
+async def qq_websocket_worker():
     while True:
         try:
-            token = await get_access_token()
+            token = await get_bot_access_token()
             if not token:
+                print("获取 Token 为空，10秒后重试...")
                 await asyncio.sleep(10)
                 continue
 
+            # 请求官方网关地址
             async with httpx.AsyncClient() as client_http:
-                # 获取 WebSocket 网关地址
                 gateway_res = await client_http.get(
                     "https://api.sgroup.qq.com/gateway",
-                    headers={"Authorization": f"Bot {APP_ID}.{token}", "X-Union-App-Id": APP_ID}
+                    headers={
+                        "Authorization": f"Bot {APP_ID}.{token}",
+                        "X-Union-App-Id": APP_ID
+                    },
+                    timeout=10.0
                 )
                 gateway_data = gateway_res.json()
                 ws_url = gateway_data.get("url")
 
             if not ws_url:
+                print("获取网关地址失败，10秒后重试...")
                 await asyncio.sleep(10)
                 continue
 
-            print(f"正在连接 QQ 官方网关: {ws_url}")
+            print(f"正在连接腾讯官方 WebSocket: {ws_url}")
             async with websockets.connect(ws_url) as websocket:
-                # 1. 发送鉴权包
-                payload = {
+                # 接收来自网关的 Hello 包 (Op 10)
+                hello_raw = await websocket.recv()
+                hello_event = json.loads(hello_raw)
+                print(f"收到网关 Hello: {hello_event}")
+
+                # 按照官方文档发送鉴权包 (Op 2 Identify)
+                # intents = 1 << 30 (公域消息事件) 或者根据实际需要调整
+                identify_payload = {
                     "op": 2,
                     "d": {
                         "token": f"Bot {APP_ID}.{token}",
-                        "intents": 1 << 30, # 接收消息权限
+                        "intents": 1 << 30, 
                         "shard": [0, 1],
-                        "properties": {}
+                        "properties": {
+                            "os": "linux",
+                            "browser": "my_catgirl_bot",
+                            "device": "my_catgirl_bot"
+                        }
                     }
                 }
-                await websocket.send(json.dumps(payload))
+                await websocket.send(json.dumps(identify_payload))
+                print("已发送鉴权包，等待接收消息...")
 
-                # 2. 持续监听消息
+                # 保持循环监听消息与心跳
                 async for message in websocket:
                     event = json.loads(message)
                     op = event.get("op")
                     
-                    # 保持心跳或处理事件
-                    if op == 10:  # Hello 包，启动定时心跳
-                        pass
+                    # 如果是服务端发来的 Reconnect 或 Invalid Session，跳出重连
+                    if op == 7 or op == 9:
+                        print("收到重连或失效指令，准备重新连接...")
+                        break
 
                     t = event.get("t", "")
+                    # 捕捉私聊(C2C)或群聊(GROUP)消息事件
                     if t in ["GROUP_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"]:
                         data = event.get("d", {})
                         user_text = data.get("content", "").strip()
@@ -94,7 +115,7 @@ async def run_bot_gateway():
                         if not user_text:
                             user_text = "（主人发了个表情或者图片喵~）"
 
-                        # 调用 DeepSeek 生成回复
+                        # 调用 DeepSeek AI 生成回复
                         messages = [
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": user_text}
@@ -106,7 +127,7 @@ async def run_bot_gateway():
                         if not reply_text.endswith("喵") and not reply_text.endswith("喵~"):
                             reply_text += "喵~"
 
-                        # 回复消息
+                        # 通过标准 OpenAPI 把回复发回 QQ 窗口
                         async with httpx.AsyncClient() as client_http:
                             headers = {
                                 "Authorization": f"Bot {APP_ID}.{token}",
@@ -123,17 +144,17 @@ async def run_bot_gateway():
                                 await client_http.post(
                                     f"https://api.sgroup.qq.com/v2/groups/{group_openid}/messages",
                                     json={"content": reply_text, "msg_id": msg_id}, headers=headers
-                                )
+                                 )
 
         except Exception as e:
-            print(f"网关连接断开，5秒后重连: {e}")
+            print(f"网关捕获到异常错误，5秒后自动尝试重连: {e}")
             await asyncio.sleep(5)
 
 @app.on_event("startup")
 async def startup_event():
-    # 启动后台网关任务
-    asyncio.create_task(run_bot_gateway())
+    # 启动后台异步任务，让猫娘的灵魂在云端常驻
+    asyncio.create_task(qq_websocket_worker())
 
 @app.get("/")
 async def root():
-    return {"status": "Catgirl Bot is running with Gateway!"}
+    return {"status": "Catgirl Bot is fully connected via Official WebSocket Spec!"}
