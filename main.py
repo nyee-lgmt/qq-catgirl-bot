@@ -1,18 +1,22 @@
-import json
-import hashlib
-from fastapi import FastAPI, Request
+import asyncio
+import os
+import botpy
+from botpy import logging
+from botpy.message import Message, GroupMessage
 from openai import OpenAI
-from cryptography.hazmat.primitives.asymmetric import ed25519
 
 # ==================== 【配置区域】 ====================
+# 1. DeepSeek API 配置
 API_KEY = "sk-9bf6dee27b55497b915823b87c889eed"
 BASE_URL = "https://api.deepseek.com"
 MODEL_NAME = "deepseek-chat"
 
+# 2. QQ 机器人配置 (请将 12345678 换成你开放平台后台真正的 AppID)
+APP_ID = "你的AppID" 
 APP_SECRET = "kYNC2sjaRJB4xrlgbXTPMJHFEDDDEFGI"
 # ======================================================
 
-app = FastAPI()
+_log = logging.get_logger()
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
 SYSTEM_PROMPT = """
@@ -23,91 +27,53 @@ SYSTEM_PROMPT = """
 2. 语气要充满爱意，像视频里那样深情、温柔、会为主人心疼、会关心人。
 """
 
-# 严格模拟 Golang ed25519.GenerateKey(strings.NewReader(seed)) 的行为
-def get_golang_compatible_ed25519_key(bot_secret: str):
-    # 1. 种子处理：循环拼接直到 >= 32 字节，取前 32 字节
-    seed = bot_secret
-    while len(seed) < 32:
-        seed += bot_secret
-    seed_bytes = seed[:32].encode('utf-8')
-
-    # 2. 模拟 Golang Reader 逻辑：用 seed 进行 SHA512 生成真正的 32 字节 private key seed
-    h = hashlib.sha512(seed_bytes).digest()
-    private_seed = h[:32]
-
-    # 3. 生成标准的 Ed25519 私钥
-    return ed25519.Ed25519PrivateKey.from_private_bytes(private_seed)
-
-PRIV_KEY = get_golang_compatible_ed25519_key(APP_SECRET)
-
-@app.head("/")
-@app.get("/")
-async def root():
-    return {"status": "Catgirl Webhook Server is Live! 喵~"}
-
-@app.api_route("/qq_webhook", methods=["GET", "POST", "HEAD"])
-async def handle_qq_webhook(request: Request):
+def get_ai_reply(user_text: str) -> str:
     try:
-        if request.method == "HEAD":
-            return {"status": "ok"}
-
-        if request.method == "GET":
-            params = dict(request.query_params)
-            return {"plain_token": params.get("plain_token", ""), "signature": ""}
-
-        body_bytes = await request.body()
-        try:
-            body_json = json.loads(body_bytes.decode('utf-8'))
-        except Exception:
-            body_json = {}
-
-        print(f"👉 收到 QQ 推送数据: {body_json}")
-
-        # 校验请求处理
-        d = body_json.get("d", {})
-        plain_token = d.get("plain_token")
-        event_ts = d.get("event_ts")
-
-        # 只要包含 plain_token 或者是 op:13 校验事件
-        if body_json.get("op") == 13 or plain_token:
-            # 拼接 msg: event_ts + plain_token (参考官方截图第30-31行)
-            msg_str = f"{event_ts}{plain_token}"
-            msg_bytes = msg_str.encode('utf-8')
-
-            # 签名并转 hex
-            sig_bytes = PRIV_KEY.sign(msg_bytes)
-            signature = sig_bytes.hex()
-
-            print(f"✅ 严格对齐 Go 语言底层逻辑，生成的签名: {signature}")
-
-            # 返回格式严格参考官方截图第38-41行
-            return {
-                "plain_token": plain_token,
-                "signature": signature
-            }
-
-        # 处理聊天消息
-        t = body_json.get("t", "")
-        if t in ["GROUP_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"]:
-            user_text = d.get("content", "").strip()
-
-            if not user_text:
-                user_text = "（主人发了个表情或者图片喵~）"
-
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_text}
-            ]
-            response = client.chat.completions.create(
-                model=MODEL_NAME, messages=messages, temperature=0.7
-            )
-            reply_text = response.choices[0].message.content
-            if not reply_text.endswith("喵") and not reply_text.endswith("喵~"):
-                reply_text += "喵~"
-
-            return {"content": reply_text}
-
-        return {"status": "ok"}
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_text}
+        ]
+        response = client.chat.completions.create(
+            model=MODEL_NAME, messages=messages, temperature=0.7
+        )
+        reply = response.choices[0].message.content
+        if not reply.endswith("喵") and not reply.endswith("喵~"):
+            reply += "喵~"
+        return reply
     except Exception as e:
-        print(f"❌ 运行异常: {e}")
-        return {"status": "ok"}
+        _log.error(f"AI 调用失败: {e}")
+        return "主人，人家现在有点晕乎乎的，等会儿再陪你聊天喵~"
+
+class CatgirlBot(botpy.Client):
+    async def on_ready(self):
+        _log.info(f"猫娘机器人女友 [{self.robot.name}] 已成功上线！喵~")
+
+    # 处理单聊/私信消息
+    async def on_c2c_message_create(self, message: Message):
+        user_text = message.content.strip()
+        _log.info(f"收到单聊消息: {user_text}")
+        reply = get_ai_reply(user_text)
+        await message._api.post_c2c_message(
+            openid=message.author.user_openid,
+            msg_type=0,
+            msg_id=message.id,
+            content=reply
+        )
+
+    # 处理群聊消息
+    async def on_group_at_message_create(self, message: GroupMessage):
+        user_text = message.content.strip()
+        _log.info(f"收到群聊消息: {user_text}")
+        reply = get_ai_reply(user_text)
+        await message._api.post_group_message(
+            group_openid=message.group_openid,
+            msg_type=0,
+            msg_id=message.id,
+            content=reply
+        )
+
+if __name__ == "__main__":
+    # 开启私信和群聊消息监听
+    intents = botpy.Intents(public_messages=True, direct_message=True)
+    client_bot = CatgirlBot(intents=intents)
+    client_bot.run(appid=APP_ID, secret=APP_SECRET)
