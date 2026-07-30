@@ -1,6 +1,2 @@
-fastapi
-uvicorn
+botpy
 openai
-httpx
-websockets
-cryptography
