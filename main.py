@@ -1,5 +1,5 @@
 import json
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from openai import OpenAI
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
@@ -8,7 +8,7 @@ API_KEY = "sk-9bf6dee27b55497b915823b87c889eed"
 BASE_URL = "https://api.deepseek.com"
 MODEL_NAME = "deepseek-chat"
 
-APP_SECRET = "EPN9h2DAuQimbll0"  # 腾讯 AppSecret
+APP_SECRET = "EPN9h2DAuQimbll0"  # 你的 AppSecret
 # ======================================================
 
 app = FastAPI()
@@ -22,13 +22,13 @@ SYSTEM_PROMPT = """
 2. 语气要充满爱意，像视频里那样深情、温柔、会为主人心疼、会关心人。
 """
 
-# 根据 AppSecret 生成 32 字节 seed 并导出 Ed25519 私钥
+# 官方规范：根据 AppSecret 补齐/截取 32 字节生成 Ed25519 私钥
 def get_ed25519_private_key(secret: str):
-    seed = secret.encode('utf-8')
-    if len(seed) < 32:
-        seed = seed.ljust(32, b'\x00')
+    secret_bytes = secret.encode('utf-8')
+    if len(secret_bytes) < 32:
+        seed = secret_bytes.ljust(32, b'\x00')
     else:
-        seed = seed[:32]
+        seed = secret_bytes[:32]
     return ed25519.Ed25519PrivateKey.from_private_bytes(seed)
 
 PRIV_KEY = get_ed25519_private_key(APP_SECRET)
@@ -44,29 +44,35 @@ async def handle_qq_webhook(request: Request):
             params = dict(request.query_params)
             return {"plain_token": params.get("plain_token", ""), "signature": ""}
 
+        # 1. 获取原始请求字节流及 HTTP 请求头
+        body_bytes = await request.body()
+        timestamp = request.headers.get("X-Signature-Timestamp", "")
+
+        # 尝试解析 JSON
         try:
-            body = await request.json()
+            body = json.loads(body_bytes.decode('utf-8'))
         except Exception:
             body = {}
 
         print(f"收到 QQ 回调数据: {body}")
 
-        # 腾讯 op: 13 校验逻辑（Ed25519 签名）
+        # 2. 腾讯官方 Webhook 签名验证 (op == 13 或 包含 plain_token)
         if body.get("op") == 13 or "plain_token" in str(body):
             d = body.get("d", {})
             plain_token = d.get("plain_token", "")
-            event_ts = d.get("event_ts", "")
 
-            # 腾讯规范：对 event_ts + plain_token 进行 Ed25519 签名
-            msg = f"{event_ts}{plain_token}".encode('utf-8')
+            # 文档规范签名公式：msg = timestamp + body
+            msg = timestamp.encode('utf-8') + body_bytes
             signature = PRIV_KEY.sign(msg).hex()
+
+            print(f"✅ 计算得到官方签名: {signature}")
 
             return {
                 "plain_token": plain_token,
                 "signature": signature
             }
 
-        # 处理用户消息
+        # 3. 处理普通消息推送
         t = body.get("t", "")
         if t in ["GROUP_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"]:
             data = body.get("d", {})
