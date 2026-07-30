@@ -1,4 +1,5 @@
 import json
+import hashlib
 from fastapi import FastAPI, Request
 from openai import OpenAI
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -8,7 +9,6 @@ API_KEY = "sk-9bf6dee27b55497b915823b87c889eed"
 BASE_URL = "https://api.deepseek.com"
 MODEL_NAME = "deepseek-chat"
 
-# 已经将你最新生成的密钥硬编码进去了
 APP_SECRET = "kYNC2sjaRJB4xrlgbXTPMJHFEDDDEFGI"
 # ======================================================
 
@@ -23,16 +23,22 @@ SYSTEM_PROMPT = """
 2. 语气要充满爱意，像视频里那样深情、温柔、会为主人心疼、会关心人。
 """
 
-# 严格遵照 QQ 官方文档的 Seed 算法生成 Ed25519 私钥
-def get_qq_ed25519_private_key(bot_secret: str):
+# 严格模拟 Golang ed25519.GenerateKey(strings.NewReader(seed)) 的行为
+def get_golang_compatible_ed25519_key(bot_secret: str):
+    # 1. 种子处理：循环拼接直到 >= 32 字节，取前 32 字节
     seed = bot_secret
-    # 如果 Seed 长度不够 32 字节，重复拼贴自身直至达到 32 字节
     while len(seed) < 32:
         seed += bot_secret
     seed_bytes = seed[:32].encode('utf-8')
-    return ed25519.Ed25519PrivateKey.from_private_bytes(seed_bytes)
 
-PRIV_KEY = get_qq_ed25519_private_key(APP_SECRET)
+    # 2. 模拟 Golang Reader 逻辑：用 seed 进行 SHA512 生成真正的 32 字节 private key seed
+    h = hashlib.sha512(seed_bytes).digest()
+    private_seed = h[:32]
+
+    # 3. 生成标准的 Ed25519 私钥
+    return ed25519.Ed25519PrivateKey.from_private_bytes(private_seed)
+
+PRIV_KEY = get_golang_compatible_ed25519_key(APP_SECRET)
 
 @app.head("/")
 @app.get("/")
@@ -57,22 +63,24 @@ async def handle_qq_webhook(request: Request):
 
         print(f"👉 收到 QQ 推送数据: {body_json}")
 
-        # 处理校验事件 (op: 13 或者包含 d.plain_token)
+        # 校验请求处理
         d = body_json.get("d", {})
         plain_token = d.get("plain_token")
         event_ts = d.get("event_ts")
 
+        # 只要包含 plain_token 或者是 op:13 校验事件
         if body_json.get("op") == 13 or plain_token:
-            # 官方签名算法：msg = event_ts + plain_token
+            # 拼接 msg: event_ts + plain_token (参考官方截图第30-31行)
             msg_str = f"{event_ts}{plain_token}"
             msg_bytes = msg_str.encode('utf-8')
 
-            # 使用 Ed25519 签名并转为 hex 字符串
+            # 签名并转 hex
             sig_bytes = PRIV_KEY.sign(msg_bytes)
             signature = sig_bytes.hex()
 
-            print(f"✅ 严格对齐官方规范，生成签名成功: {signature}")
+            print(f"✅ 严格对齐 Go 语言底层逻辑，生成的签名: {signature}")
 
+            # 返回格式严格参考官方截图第38-41行
             return {
                 "plain_token": plain_token,
                 "signature": signature
