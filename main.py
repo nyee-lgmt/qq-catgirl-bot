@@ -8,7 +8,8 @@ API_KEY = "sk-9bf6dee27b55497b915823b87c889eed"
 BASE_URL = "https://api.deepseek.com"
 MODEL_NAME = "deepseek-chat"
 
-APP_SECRET = "EPN9h2DAuQimbll0"  # 请核对是否和 QQ 开放平台后台的 AppSecret 完全一致
+# 请在此处填写 QQ 开放平台的 AppSecret
+APP_SECRET = "EPN9h2DAuQimbll0"
 # ======================================================
 
 app = FastAPI()
@@ -22,18 +23,22 @@ SYSTEM_PROMPT = """
 2. 语气要充满爱意，像视频里那样深情、温柔、会为主人心疼、会关心人。
 """
 
-# 根据 AppSecret 生成 32 字节 seed 并导出 Ed25519 私钥
-def get_ed25519_private_key(secret: str):
-    secret_bytes = secret.encode('utf-8')
-    if len(secret_bytes) < 32:
-        seed = secret_bytes.ljust(32, b'\x00')
-    else:
-        seed = secret_bytes[:32]
+# 严格按照腾讯文档：将 Secret 生成 32 字节 seed 并创建 Ed25519 私钥
+def get_private_key(secret_str: str):
+    try:
+        # 如果 Secret 是 64 位 Hex 字符串
+        seed = bytes.fromhex(secret_str)
+    except Exception:
+        # 如果是普通文本，转为 UTF-8 编码并用 0 补齐或截取至 32 字节
+        b = secret_str.encode('utf-8')
+        if len(b) < 32:
+            seed = b.ljust(32, b'\x00')
+        else:
+            seed = b[:32]
     return ed25519.Ed25519PrivateKey.from_private_bytes(seed)
 
-PRIV_KEY = get_ed25519_private_key(APP_SECRET)
+PRIV_KEY = get_private_key(APP_SECRET)
 
-# 响应腾讯探活 HEAD / GET 请求，防止报 405
 @app.head("/")
 @app.get("/")
 async def root():
@@ -42,48 +47,50 @@ async def root():
 @app.api_route("/qq_webhook", methods=["GET", "POST", "HEAD"])
 async def handle_qq_webhook(request: Request):
     try:
-        # 处理 HEAD 探活
         if request.method == "HEAD":
             return {"status": "ok"}
 
-        # 处理 GET 请求
         if request.method == "GET":
             params = dict(request.query_params)
             return {"plain_token": params.get("plain_token", ""), "signature": ""}
 
-        # 处理 POST 请求
+        # 获取原始 Body 字节流与请求头
         body_bytes = await request.body()
         timestamp = request.headers.get("X-Signature-Timestamp", "")
+        if not timestamp:
+            timestamp = request.headers.get("x-signature-timestamp", "")
 
+        body_str = body_bytes.decode('utf-8')
         try:
-            body = json.loads(body_bytes.decode('utf-8'))
+            body_json = json.loads(body_str)
         except Exception:
-            body = {}
+            body_json = {}
 
-        print(f"👉 收到 QQ 开放平台推送: {body}")
+        print(f"👉 收到 QQ 消息: {body_str}")
 
-        # 腾讯 op: 13 签名校验
-        if body.get("op") == 13 or "plain_token" in str(body):
-            d = body.get("d", {})
+        # 1. 腾讯 op: 13 或签名校验事件
+        if body_json.get("op") == 13 or "plain_token" in body_str:
+            d = body_json.get("d", {})
             plain_token = d.get("plain_token", "")
 
-            # 签名逻辑：msg = timestamp + body
-            msg = timestamp.encode('utf-8') + body_bytes
-            signature = PRIV_KEY.sign(msg).hex()
+            # 官方计算公式：msg = timestamp.encode() + body_bytes
+            msg_to_sign = timestamp.encode('utf-8') + body_bytes
+            sig_bytes = PRIV_KEY.sign(msg_to_sign)
+            signature = sig_bytes.hex()
 
-            print(f"✅ 计算并返回签名: {signature}")
+            print(f"✅ 计算官方签名成功: {signature}")
 
             return {
                 "plain_token": plain_token,
                 "signature": signature
             }
 
-        # 处理聊天消息
-        t = body.get("t", "")
+        # 2. 处理聊天消息
+        t = body_json.get("t", "")
         if t in ["GROUP_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"]:
-            data = body.get("d", {})
+            data = body_json.get("d", {})
             user_text = data.get("content", "").strip()
-            
+
             if not user_text:
                 user_text = "（主人发了个表情或者图片喵~）"
 
@@ -102,5 +109,5 @@ async def handle_qq_webhook(request: Request):
 
         return {"status": "ok"}
     except Exception as e:
-        print(f"❌ 处理 Webhook 异常: {e}")
+        print(f"❌ 运行异常: {e}")
         return {"status": "ok"}
