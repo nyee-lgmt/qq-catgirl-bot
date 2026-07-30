@@ -5,13 +5,11 @@ from botpy import logging
 from botpy.message import Message, GroupMessage
 from openai import OpenAI
 
-# ==================== 【已配置区域】 ====================
-# 1. DeepSeek API 配置
+# ==================== 【配置区域】 ====================
 API_KEY = "sk-9bf6dee27b55497b915823b87c889eed"
 BASE_URL = "https://api.deepseek.com"
 MODEL_NAME = "deepseek-chat"
 
-# 2. QQ 机器人配置（已自动为你带入你的 AppID 和 Secret）
 APP_ID = "1905312839" 
 APP_SECRET = "kYNC2sjaRJB4xrlgbXTPMJHFEDDDEFGI"
 # ======================================================
@@ -73,7 +71,10 @@ class CatgirlBot(botpy.Client):
         )
 
 if __name__ == "__main__":
-    # 订阅消息类型（群聊及私信）
+    # 【关键修复】手动给主线程指定一个新的 asyncio 事件循环，兼容 Python 3.12+ 
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     intents = botpy.Intents(public_messages=True, direct_message=True)
     client_bot = CatgirlBot(intents=intents)
     client_bot.run(appid=APP_ID, secret=APP_SECRET)
