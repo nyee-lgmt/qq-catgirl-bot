@@ -5,14 +5,14 @@ from botpy import logging
 from botpy.message import Message, GroupMessage
 from openai import OpenAI
 
-# ==================== 【配置区域】 ====================
+# ==================== 【已配置区域】 ====================
 # 1. DeepSeek API 配置
 API_KEY = "sk-9bf6dee27b55497b915823b87c889eed"
 BASE_URL = "https://api.deepseek.com"
 MODEL_NAME = "deepseek-chat"
 
-# 2. QQ 机器人配置 (请将 12345678 换成你开放平台后台真正的 AppID)
-APP_ID = "你的AppID" 
+# 2. QQ 机器人配置（已自动为你带入你的 AppID 和 Secret）
+APP_ID = "1905312839" 
 APP_SECRET = "kYNC2sjaRJB4xrlgbXTPMJHFEDDDEFGI"
 # ======================================================
 
@@ -46,9 +46,9 @@ def get_ai_reply(user_text: str) -> str:
 
 class CatgirlBot(botpy.Client):
     async def on_ready(self):
-        _log.info(f"猫娘机器人女友 [{self.robot.name}] 已成功上线！喵~")
+        _log.info(f"🐱 猫娘女朋友 [{self.robot.name}] 已成功上线！喵~")
 
-    # 处理单聊/私信消息
+    # 处理私信 / 单聊消息
     async def on_c2c_message_create(self, message: Message):
         user_text = message.content.strip()
         _log.info(f"收到单聊消息: {user_text}")
@@ -60,7 +60,7 @@ class CatgirlBot(botpy.Client):
             content=reply
         )
 
-    # 处理群聊消息
+    # 处理群聊 @ 消息
     async def on_group_at_message_create(self, message: GroupMessage):
         user_text = message.content.strip()
         _log.info(f"收到群聊消息: {user_text}")
@@ -73,7 +73,7 @@ class CatgirlBot(botpy.Client):
         )
 
 if __name__ == "__main__":
-    # 开启私信和群聊消息监听
+    # 订阅消息类型（群聊及私信）
     intents = botpy.Intents(public_messages=True, direct_message=True)
     client_bot = CatgirlBot(intents=intents)
     client_bot.run(appid=APP_ID, secret=APP_SECRET)
