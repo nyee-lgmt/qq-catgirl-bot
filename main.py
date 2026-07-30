@@ -23,13 +23,13 @@ SYSTEM_PROMPT = """
 async def root():
     return {"status": "Catgirl Webhook Server is Live! 喵~"}
 
-@app.all("/qq_webhook")
+@app.post("/qq_webhook")
 async def handle_qq_webhook(request: Request):
     try:
         body = await request.json()
         print(f"收到 QQ 回调数据: {body}")
 
-        # 1. 响应腾讯开放平台的 Ping / 校验请求 (极简无防刷直接过)
+        # 1. 响应腾讯开放平台的 Ping / 校验请求
         if body.get("op") == 13 or "plain_token" in str(body):
             d = body.get("d", {})
             plain_token = d.get("plain_token", "")
