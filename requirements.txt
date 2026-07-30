@@ -1,2 +1,2 @@
-botpy
+qq-botpy
 openai
